@@ -48,3 +48,5 @@ void coupe_disk_eject(int drive);
 const char *coupe_disk_path(int drive);
 bool coupe_disk_write_protected(int drive);
 bool coupe_disk_create(const char *path, uint32_t bytes);
+/* The mounted image's kind ("MGT", "Pro-DOS CP/M", "EDSK"), NULL if none */
+const char *coupe_disk_kind(int drive);

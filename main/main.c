@@ -3,6 +3,8 @@
 #include "emu/sdcard.h"
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
 #include <stdio.h>
@@ -119,13 +121,13 @@ static void screen_mode(emu_screen_t *mode)
 }
 
 static const char *const drive_names[] = {"Drive 1", "Drive 2"};
-static const char *const extensions[] = {".mgt", ".dsk", NULL};
+static const char *const extensions[] = {".mgt", ".dsk", ".cpm", NULL};
 static const disks_size_t disk_sizes[] = {{COUPE_DISK_BYTES, "800 KiB"}};
 
 static const disks_config_t disks = {
     .folder = "coupe",
     .extensions = extensions,
-    .description = "SAM floppy images (.MGT, raw .DSK)",
+    .description = "SAM floppy images (.MGT, .DSK raw or EDSK, Pro-DOS .CPM)",
     .title = "Floppy disks",
     .button = "Floppy",
     .nvs_namespace = NVS_NAMESPACE,
@@ -135,7 +137,7 @@ static const disks_config_t disks = {
     .new_extension = ".mgt",
     .sizes = disk_sizes,
     .size_count = 1,
-    .max_upload = COUPE_DISK_BYTES,
+    .max_upload = 1024 * 1024,         /* EDSK images run to ~880 KB */
     .insert = coupe_disk_insert,
     .eject = coupe_disk_eject,
     .path = coupe_disk_path,
@@ -148,7 +150,7 @@ static void status(emu_json_t *json, int section)
     if (section == EMU_STATUS_DRIVES) {
         for (int drive = 0; drive < COUPE_DISK_COUNT; drive++) {
             emu_json_drive(json, drive_names[drive], disks_name(drive),
-                           coupe_disk_write_protected(drive), false, 0, 0, NULL);
+                           coupe_disk_write_protected(drive), false, 0, 0, coupe_disk_kind(drive));
         }
         return;
     }
@@ -167,6 +169,25 @@ static void console_info(char *text, size_t size)
     coupe_status_t state;
     coupe_get_status(&state);
     snprintf(text, size, "frames %lu PC $%04X mode %u", (unsigned long)state.frames, state.pc, state.mode);
+}
+
+/*   k <hex>            tap a key by its HID usage (0x42 F9: boot the disk)
+ *   K <hex> <0|1>      a key down or up
+ */
+static bool console_command(const char *line)
+{
+    unsigned usage = 0, down = 0;
+    if (line[0] == 'k' && sscanf(line + 1, "%x", &usage) == 1) {
+        coupe_hid_key(usage, true);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        coupe_hid_key(usage, false);
+        return true;
+    }
+    if (line[0] == 'K' && sscanf(line + 1, "%x %u", &usage, &down) == 2) {
+        coupe_hid_key(usage, down != 0);
+        return true;
+    }
+    return false;
 }
 
 static const emu_machine_t machine = {
@@ -191,6 +212,7 @@ static const emu_machine_t machine = {
     .disks = &disks,
     .status = status,
     .console_info = console_info,
+    .console_command = console_command,
 };
 
 void app_main(void)

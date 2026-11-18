@@ -1,4 +1,8 @@
-/* Boot a local ROM with the board-independent machine core. */
+/* Boot a local ROM with the board-independent machine core.
+ *
+ * COUPE_KEYS types (\n Enter, \b F9, \w five seconds, \d drive 1 changed
+ * to the image in COUPE_SWAP); COUPE_DISK2 mounts an image in drive 2.
+ */
 #include "coupe.h"
 
 #include <errno.h>
@@ -21,6 +25,7 @@ static bool type_text(const char *text)
 {
     for (; text && *text; text++) {
         uint8_t usage;
+        bool shift = false;
         char c = *text;
         if (c >= 'A' && c <= 'Z') {
             usage = 4 + c - 'A';
@@ -36,17 +41,34 @@ static bool type_text(const char *text)
             text++;
             run_frames(250);
             continue;
+        } else if (c == '\\' && text[1] == 'd') {
+            text++;
+            const char *swap = getenv("COUPE_SWAP");
+            if (!swap || !coupe_disk_insert(0, swap)) {
+                fprintf(stderr, "cannot mount COUPE_SWAP\n");
+                return false;
+            }
+            continue;
         } else {
             switch (c) {
             case ' ': usage = 0x2c; break;
             case '+': usage = 0x57; break;
             case '"': usage = 0x34; break;
+            case '.': usage = 0x37; break;
+            case ':': usage = 0x32; break;     /* the SAM's own : key (ISO #) */
             default: return false;
             }
+        }
+        if (shift) {
+            coupe_hid_key(0xe1, true);
+            run_frames(2);
         }
         coupe_hid_key(usage, true);
         run_frames(6);
         coupe_hid_key(usage, false);
+        if (shift) {
+            coupe_hid_key(0xe1, false);
+        }
         run_frames(6);
         if (usage == 0x42) {
             run_frames(180);
@@ -119,6 +141,11 @@ int main(int argc, char **argv)
     coupe_init(&config);
     if (argc == 5 && !coupe_disk_insert(0, argv[4])) {
         fprintf(stderr, "cannot mount %s\n", argv[4]);
+        return 1;
+    }
+    const char *second = getenv("COUPE_DISK2");
+    if (second && !coupe_disk_insert(1, second)) {
+        fprintf(stderr, "cannot mount %s\n", second);
         return 1;
     }
     run_frames(count);

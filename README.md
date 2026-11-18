@@ -50,22 +50,35 @@ serial console. It uses the same Z80 core as
 
 **Disks**
 
-- Two 1772-style drives with **read/write support for raw 800 KiB
-  `.MGT` and `.DSK` images**. Each image has 80 tracks per side, two
-  sides, and ten 512-byte sectors per track.
+- Two 1772-style drives with **read/write support** for:
+  - raw 800 KiB `.MGT` and `.DSK` images (SAMDOS, MasterDOS: 80 tracks,
+    two sides, ten 512-byte sectors per track);
+  - raw 720 KiB `.CPM` and `.DSK` images in Pro-DOS's CP/M format (nine
+    sectors per track): the Pro-DOS system disk, FDOS and the CP/M
+    collection's Infocom games, HiSoft tools and adventures;
+  - extended `.DSK` images (EDSK), with any sector IDs and sizes, such as
+    the Pro-DOS 1.8 and Pro-DOS Lite boot disks with their three 1 KiB
+    sectors a track.
 - Mount an image from the SD card through the setup screen or the web page.
   The setup screen can also create blank images for a running SAMDOS session.
 - Press **F9** or type `BOOT` with a SAMDOS system disk in Drive 1.
   The [SAMDOS archive](https://www.worldofsam.org/products/samdos) includes
   the original system disks.
+- **CP/M through Pro-DOS**: boot a Pro-DOS boot disk with F9, insert the
+  system disk in Drive 1 when it asks and press Space, then `B:` for the
+  disk in Drive 2. The disks are on the
+  [Pro-DOS pages](http://www.samcoupe-pro-dos.co.uk/prodosdisk.html)
+  ([CP/M images](http://www.samcoupe-pro-dos.co.uk/cpm_images.html),
+  [FDOS](http://www.samcoupe-pro-dos.co.uk/fdos_download.html)); Zork I
+  runs from its `.cpm` image.
 
 **Around it**
 
 - **Touchscreen setup** for Bluetooth pairing, Wi-Fi, sound and disks.
   Hold the top-right corner for two seconds to return to setup.
 - **Web interface** at `http://sam-coupe.local` when the board is on the
-  network. Upload, insert, eject and download raw floppy images and check
-  the emulator's status.
+  network. Upload, insert, eject and download floppy images and check
+  the emulator's status (each drive shows its image's kind).
 
 <p align="center">
   <img alt="SAM BASIC showing 13 after evaluating PRINT 6+7"
@@ -139,7 +152,7 @@ finds a valid image there. ROM files are supplied separately.
 |---|---|
 | `main/main.c` | PSRAM and ROM setup, storage callbacks, and integration with `emu_machine_t` |
 | `components/coupe/coupe.c` | Z80 bus, SAM memory paging, keyboard, interrupts and video |
-| `components/coupe/floppy.c` | Two floppy register sets and the raw image backend |
+| `components/coupe/floppy.c` | Two floppy register sets; raw MGT and Pro-DOS images and EDSK as tables of sectors |
 | `components/coupe/sound.c` | SAA1099 stereo tone and noise mixer and the ASIC beeper |
 | `components/coupe/host/` | Standalone host harness using the same machine core |
 
@@ -172,11 +185,10 @@ Set `COUPE_MEMORY=256` to boot the base machine. The host defaults to
 
 - Memory contention, interrupts and floppy timings are approximate.
   Video register changes are sampled once per scanline.
-- The floppy controller handles raw sectors. Guest formatting, raw track
-  operations, protected images and SAD/EDSK containers still need support.
-  An extended DSK image must be converted before it can be mounted.
-  Raw Pro-DOS/CP/M disks use nine sectors per track and are outside the
-  current 800 KiB image support. [SAMdisk format reference](https://simonowen.com/samdisk/formats/)
+- The floppy controller reads and writes sectors. Guest formatting (Write
+  Track), raw track reads and the SAD, SDF and TD0 containers still need
+  support; EDSK images keep their layout (a sector's size can't change).
+  [SAMdisk format reference](https://simonowen.com/samdisk/formats/)
 - Cassette, MIDI, mouse, external RAM and SAA1099 envelope generators are
   unimplemented. Game and demo compatibility, keyboard input and speaker
   output still need testing on hardware.
