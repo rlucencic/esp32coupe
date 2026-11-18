@@ -41,9 +41,20 @@ and its default branch is `main`.
   sizes, larger sectors streamed in 1 KiB chunks; the image's ST1/ST2 give
   CRC errors and deleted data). Each drive has its own 1772-style
   registers. Drive 1 is at `0xE0–0xE7`, Drive 2 at `0xF0–0xF7`, and bit 2
-  selects the side. The setup screen can create a blank 800 KiB image for
-  a running DOS. Guest formatting (Write Track), raw track reads, and the
-  SAD, SDF and TD0 containers remain open. The console's `k <hex>` taps a
+  selects the side. The setup screen and web page create blank 800 KiB
+  (`.mgt`) and 720 KiB (`.cpm`) images. **Write Track** (format) collects a
+  revolution's bytes (6,250; $F5 writes A1, $F6 C2, $F7 the CRC), finds the
+  sectors (ID mark $FE after a sync, data mark $FB/$F8) and writes them where
+  the image's layout allows: a raw image's own geometry, an EDSK track's own
+  number and sizes of sectors (IDs updated in its header); anything else is
+  a write error. **Read Track** synthesises the track (gaps, syncs, IDs, data,
+  CRCs). Checked on the host: SAMDOS 2's "Format New Disk" on a blank 800 KiB
+  image ($AA-filled: every byte rewritten), DOS copied on, the new disk
+  boots and lists samdos2 with 770 K free; Pro-DOS's FORMAT B: on a blank
+  720 KiB image (its spec block `03 81 50 09 ...` written, then `SAVE 2
+  B:NEW.COM` listed) and on the Modula-2 EDSK in place (empty, 706 K free,
+  same file size). Read Track: no software here uses it. The SAD, SDF and
+  TD0 containers remain open. The console's `k <hex>` taps a
   key by its HID usage (`k 42`: F9, boot), `K <hex> 0|1` holds one.
 - **Floppy restart regression.** The old drive config omitted `.path`.
   Opening Floppy calls the shared `disks_name()`, which invokes that callback
@@ -66,12 +77,32 @@ and its default branch is `main`.
   checks: Pro-DOS 1.9 boots, takes its system disk in Drive 1 after Space
   and reaches `A>`; `DIR` lists A:, `DIR B:` the disk in Drive 2 (Zork I's
   `.cpm`, FDOS-001's 32 files, the Modula-2 EDSK's 13); Zork I runs ("open
-  mailbox"); `SAVE 1 B:TEST.COM` writes to a `.cpm` and to the EDSK, and a
+  mailbox"; on the Tab5 too: the images uploaded through the web API,
+  inserted, F9 and Space by the console's `k`, Enter first to leave the
+  start-up screen); `SAVE 1 B:TEST.COM` writes to a `.cpm` and to the EDSK, and a
   fresh run lists TEST.COM on both; Pro-DOS 1.8 and Lite boot from their
   EDSK images to their prompts; SAMDOS 2 still boots from its 800 KiB
   image (unchanged). The host harness: `COUPE_DISK2=<image>` mounts Drive
   2, `\d` in `COUPE_KEYS` swaps Drive 1 to `COUPE_SWAP`, `:` types the
   SAM's own colon key (HID 0x32, the ISO key).
+
+## The web page
+
+- `status()` in `main/main.c`: System, ROM (its source, ROM 0/1 paged in or
+  out), Memory (sections A-D and their pages, from LMPR/HMPR), Screen (mode
+  1-4 with resolution, colours, size and pages, the border's palette entry,
+  screen off), Palette (the 16 CLUT entries as swatches of the 128 colours),
+  Line interrupt, Sound (the SAA1099's sounding channels: pitch, noise,
+  volume L/R; the beeper), Keyboard (the SAM keys' places), Disks; each
+  drive's detail is its image's kind. The core reports them through
+  `coupe_get_status()` and `coupe_get_sound()`.
+- The whole `/api/status` reply must fit esp32emu's 4 KiB (`STATUS_SIZE` in
+  `web.c`): rows are HTML inside JSON (quotes escaped), so keep markup short
+  (a swatch is `<b style="background:#rrggbb">&nbsp;&nbsp;&nbsp;</b>`); the
+  Coupé's reply is ~2.7 KiB. A palette row in a 640-byte buffer was cut
+  after four swatches.
+- Speed: core 1 is busy all the time on the Tab5; 94% speed at BASIC, 86%
+  in Pro-DOS's mode 3 (2026-11-18). Open.
 
 ## Build and verification
 

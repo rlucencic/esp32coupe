@@ -15,8 +15,15 @@
  *                       1 KB sectors numbered 253-255), CRC errors and
  *                       deleted data from the image's status bytes (.dsk)
  *
- * Writes go to the image in place, a sector at a time. Formatting (Write
- * Track) is not implemented.
+ * Writes go to the image in place, a sector at a time. Write Track (format)
+ * collects a revolution's bytes ($F5 writes A1, $F6 C2, $F7 the CRC), finds
+ * the sectors in them (an ID mark $FE after a sync, C H R N; a data mark
+ * $FB or $F8 (deleted) after a sync, then 128 << (N & 3) bytes) and puts
+ * them in the image where its layout allows: a raw image's own geometry
+ * (10 or 9 sectors of 512), an EDSK track's own number and sizes of
+ * sectors (their IDs updated); anything else is a write error. Read Track
+ * gives the track as the head would see it: gaps, sync, ID fields, data
+ * and their CRCs.
  */
 #include "coupe.h"
 #include "floppy.h"
@@ -28,6 +35,9 @@
 enum {
     CYLINDERS = 84,                     /* what a drive can step to (images: 80-83) */
     CHUNK = 1024,                       /* larger sectors stream through the buffer */
+    TRACK_BYTES = 6250,                 /* a revolution at 250 kbit/s */
+    TRACK_BUFFER = 6656,
+    MAX_FORMAT_SECTORS = 64,
     BUSY = 0x01,
     DRQ = 0x02,
     LOST_DATA = 0x04,
@@ -46,13 +56,14 @@ enum {
     RAW_PRODOS_BYTES = 737280,
 };
 
-typedef enum {IDLE, SEEK, READ_SECTOR, WRITE_SECTOR, READ_ADDRESS} operation_t;
+typedef enum {IDLE, SEEK, READ_SECTOR, WRITE_SECTOR, READ_ADDRESS, READ_TRACK, WRITE_TRACK} operation_t;
 
 typedef struct {
     uint8_t c, h, r, n;
     uint8_t st1, st2;                   /* EDSK: the 765's status (CRC error, deleted data) */
     uint16_t size;                      /* the data's bytes */
     uint32_t offset;                    /* in the file */
+    uint32_t info;                      /* EDSK: its 8-byte entry in the track header (0: raw) */
 } sector_t;
 
 typedef struct {
@@ -63,6 +74,7 @@ typedef struct {
 typedef struct {
     sector_t *sectors;                  /* malloc'd at insert */
     track_t tracks[CYLINDERS][2];
+    bool edsk;
 } layout_t;
 
 typedef struct {
@@ -78,6 +90,7 @@ typedef struct {
     const sector_t *current;            /* the sector being read or written */
     unsigned offset, size;              /* into it */
     uint8_t buffer[CHUNK];
+    uint8_t *raw;                       /* Read/Write Track's bytes (TRACK_BUFFER, on first use) */
 } disk_t;
 
 static disk_t disks[COUPE_DISK_COUNT];
@@ -89,7 +102,9 @@ static void reset_controller(disk_t *disk)
     FILE *file = disk->file;
     bool read_only = disk->read_only;
     layout_t *layout = disk->layout;
-    *disk = (disk_t){.file = file, .read_only = read_only, .layout = layout, .type_one = true, .step = 1};
+    uint8_t *raw = disk->raw;
+    *disk = (disk_t){.file = file, .read_only = read_only, .layout = layout, .raw = raw, .type_one = true,
+                     .step = 1};
 }
 
 void coupe_fdc_reset(void)
@@ -174,6 +189,7 @@ static layout_t *edsk_layout(FILE *file, long length)
         return NULL;
     }
     layout->sectors = s;
+    layout->edsk = true;
     unsigned n = 0;
     offset = 256;
     for (int t = 0; t < cylinders * sides; t++) {
@@ -199,7 +215,7 @@ static layout_t *edsk_layout(FILE *file, long length)
             /* (more than N says: copies of a weak sector; the first one) */
             uint32_t bytes = length_in_image < natural ? length_in_image : natural;
             s[n] = (sector_t){.c = id[0], .h = id[1], .r = id[2], .n = id[3], .st1 = id[4], .st2 = id[5],
-                              .size = bytes, .offset = data};
+                              .size = bytes, .offset = data, .info = offset + 0x18 + 8 * k};
             data += length_in_image;
         }
         offset += size;
@@ -285,9 +301,10 @@ bool coupe_disk_write_protected(int drive)
     return drive >= 0 && drive < COUPE_DISK_COUNT && disks[drive].read_only;
 }
 
+/* A blank raw image: 800 KB (MGT) or 720 KB (Pro-DOS), to format */
 bool coupe_disk_create(const char *path, uint32_t bytes)
 {
-    if (bytes != COUPE_DISK_BYTES) {
+    if (bytes != RAW_MGT_BYTES && bytes != RAW_PRODOS_BYTES) {
         return false;
     }
     FILE *file = fopen(path, "wbx");
@@ -296,7 +313,7 @@ bool coupe_disk_create(const char *path, uint32_t bytes)
     }
     static const uint8_t empty[512];
     bool ok = true;
-    for (unsigned i = 0; ok && i < COUPE_DISK_BYTES / sizeof(empty); i++) {
+    for (unsigned i = 0; ok && i < bytes / sizeof(empty); i++) {
         ok = fwrite(empty, sizeof(empty), 1, file) == 1;
     }
     ok = fclose(file) == 0 && ok;
@@ -451,12 +468,195 @@ static bool ready(const disk_t *disk, uint32_t cycles)
     return (int32_t)(cycles - disk->ready_at) >= 0;
 }
 
+static unsigned crc_add(unsigned crc, uint8_t byte)
+{
+    crc ^= (unsigned)byte << 8;
+    for (unsigned bit = 0; bit < 8; bit++) {
+        crc = ((crc << 1) ^ ((crc & 0x8000) ? 0x1021 : 0)) & 0xffff;
+    }
+    return crc;
+}
+
+static bool track_buffer(disk_t *disk)
+{
+    if (!disk->raw) {
+        disk->raw = malloc(TRACK_BUFFER);
+    }
+    return disk->raw != NULL;
+}
+
+/* Read Track: the track as the head sees it */
+static void read_track(disk_t *disk, uint32_t cycles)
+{
+    const track_t *t = head_track(disk);
+    if (!disk->file || !track_buffer(disk)) {
+        finish(disk, NOT_FOUND);
+        return;
+    }
+    uint8_t *p = disk->raw;
+    unsigned n = 0;
+#define PUT(b) do { if (n < TRACK_BYTES) { p[n++] = (b); } } while (0)
+    for (int i = 0; i < 60; i++) {
+        PUT(0x4e);
+    }
+    for (unsigned k = 0; t && k < t->count; k++) {
+        const sector_t *s = &disk->layout->sectors[t->first + k];
+        unsigned crc = 0xffff;
+        for (int i = 0; i < 12; i++) {
+            PUT(0x00);
+        }
+        const uint8_t id[] = {0xa1, 0xa1, 0xa1, 0xfe, s->c, s->h, s->r, s->n};
+        for (unsigned i = 0; i < sizeof(id); i++) {
+            PUT(id[i]);
+            crc = crc_add(crc, id[i]);
+        }
+        PUT(crc >> 8);
+        PUT(crc & 0xff);
+        for (int i = 0; i < 22; i++) {
+            PUT(0x4e);
+        }
+        for (int i = 0; i < 12; i++) {
+            PUT(0x00);
+        }
+        crc = 0xffff;
+        const uint8_t mark[] = {0xa1, 0xa1, 0xa1, (s->st2 & 0x40) ? 0xf8 : 0xfb};
+        for (unsigned i = 0; i < sizeof(mark); i++) {
+            PUT(mark[i]);
+            crc = crc_add(crc, mark[i]);
+        }
+        unsigned room = n < TRACK_BYTES ? TRACK_BYTES - n : 0, size = s->size < room ? s->size : room;
+        if (size && (fseek(disk->file, s->offset, SEEK_SET) != 0 || fread(p + n, 1, size, disk->file) != size)) {
+            memset(p + n, 0xe5, size);
+        }
+        for (unsigned i = 0; i < size; i++) {
+            crc = crc_add(crc, p[n + i]);
+        }
+        n += size;
+        PUT(crc >> 8);
+        PUT(crc & 0xff);
+        for (int i = 0; i < 24; i++) {
+            PUT(0x4e);
+        }
+    }
+    while (n < TRACK_BYTES) {
+        p[n++] = 0x4e;
+    }
+#undef PUT
+    disk->offset = 0;
+    disk->size = TRACK_BYTES;
+    disk->ready_at = cycles + COMMAND_DELAY;
+    disk->data_deadline = disk->ready_at + FIRST_BYTE_TIMEOUT;
+    disk->op = READ_TRACK;
+}
+
+static void write_track(disk_t *disk, uint32_t cycles)
+{
+    if (!disk->file) {
+        finish(disk, NOT_FOUND);
+        return;
+    }
+    if (disk->read_only) {
+        finish(disk, PROTECTED);
+        return;
+    }
+    if (!track_buffer(disk)) {
+        finish(disk, WRITE_ERROR);
+        return;
+    }
+    disk->offset = 0;
+    disk->size = TRACK_BYTES;
+    disk->ready_at = cycles + COMMAND_DELAY;
+    disk->data_deadline = disk->ready_at + FIRST_BYTE_TIMEOUT;
+    disk->op = WRITE_TRACK;
+}
+
+typedef struct {
+    uint8_t c, h, r, n;
+    bool deleted;
+    const uint8_t *data;
+    unsigned size;
+} formatted_t;
+
+static bool put(FILE *file, uint32_t at, const void *data, unsigned size)
+{
+    return fseek(file, at, SEEK_SET) == 0 && fwrite(data, 1, size, file) == size;
+}
+
+/* The written track's sectors into the image: its error bits */
+static uint8_t apply_track(disk_t *disk)
+{
+    static formatted_t found[MAX_FORMAT_SECTORS];
+    const uint8_t *t = disk->raw;
+    unsigned len = disk->offset, count = 0;
+    bool have_id = false;
+    uint8_t id[4] = {0};
+    for (unsigned i = 1; i < len && count < MAX_FORMAT_SECTORS; i++) {
+        bool after_sync = t[i - 1] == 0xf5;
+        if (t[i] == 0xfe && after_sync && i + 4 < len) {
+            memcpy(id, t + i + 1, 4);
+            have_id = true;
+            i += 4;
+        } else if ((t[i] == 0xfb || t[i] == 0xf8) && after_sync && have_id) {
+            unsigned size = 128u << (id[3] & 3);
+            if (i + 1 + size > len) {
+                break;
+            }
+            found[count++] = (formatted_t){id[0], id[1], id[2], id[3], t[i] == 0xf8, t + i + 1, size};
+            i += size;
+            have_id = false;
+        }
+    }
+    const track_t *tr = disk->cylinder < CYLINDERS ? &disk->layout->tracks[disk->cylinder][disk->side] : NULL;
+    if (!tr || tr->count == 0 || count != tr->count) {
+        return WRITE_ERROR;             /* not this image's layout */
+    }
+    sector_t *s = &disk->layout->sectors[tr->first];
+    if (!disk->layout->edsk) {
+        /* a raw image: its sectors 1-n of 512, in any order */
+        bool seen[MAX_FORMAT_SECTORS] = {false};
+        for (unsigned k = 0; k < count; k++) {
+            if ((found[k].n & 3) != 2 || found[k].r < 1 || found[k].r > count || seen[found[k].r - 1]) {
+                return WRITE_ERROR;
+            }
+            seen[found[k].r - 1] = true;
+        }
+        for (unsigned k = 0; k < count; k++) {
+            if (!put(disk->file, s[found[k].r - 1].offset, found[k].data, 512)) {
+                return WRITE_ERROR;
+            }
+        }
+    } else {
+        /* an EDSK track: the same number and sizes of sectors, new IDs */
+        for (unsigned k = 0; k < count; k++) {
+            if (found[k].size != s[k].size) {
+                return WRITE_ERROR;
+            }
+        }
+        for (unsigned k = 0; k < count; k++) {
+            uint8_t info[6] = {found[k].c, found[k].h, found[k].r, found[k].n, 0, found[k].deleted ? 0x40 : 0};
+            if (!put(disk->file, s[k].offset, found[k].data, found[k].size) ||
+                !put(disk->file, s[k].info, info, sizeof(info))) {
+                return WRITE_ERROR;
+            }
+            s[k].c = info[0];
+            s[k].h = info[1];
+            s[k].r = info[2];
+            s[k].n = info[3];
+            s[k].st1 = 0;
+            s[k].st2 = info[5];
+        }
+    }
+    return fflush(disk->file) == 0 ? 0 : WRITE_ERROR;
+}
+
 static void update_status(disk_t *disk, uint32_t cycles)
 {
     if (disk->op == SEEK) {
         if (ready(disk, cycles)) {
             finish(disk, 0);
         }
+    } else if (disk->op == WRITE_TRACK && (int32_t)(cycles - disk->data_deadline) >= 0) {
+        finish(disk, apply_track(disk));        /* the CPU stopped short of a revolution */
     } else if (disk->op != IDLE && (int32_t)(cycles - disk->data_deadline) >= 0) {
         /* The boot ROM can leave the tail of its last sector unread. */
         finish(disk, LOST_DATA);
@@ -504,6 +704,12 @@ uint8_t coupe_fdc_read(int drive, int port, uint32_t cycles)
         if (disk->offset == disk->size) {
             finish(disk, 0);
         }
+    } else if (disk->op == READ_TRACK && ready(disk, cycles)) {
+        disk->data_deadline = cycles + DATA_TIMEOUT;
+        disk->data = disk->raw[disk->offset++];
+        if (disk->offset == disk->size) {
+            finish(disk, 0);
+        }
     } else if (disk->op == READ_SECTOR && ready(disk, cycles)) {
         disk->data_deadline = cycles + DATA_TIMEOUT;
         disk->data = disk->buffer[disk->offset++ % CHUNK];
@@ -545,8 +751,10 @@ void coupe_fdc_write(int drive, int port, uint8_t value, uint32_t cycles)
             }
         } else if ((value & 0xf0) == 0xc0) {
             read_address(disk, cycles);
+        } else if ((value & 0xf0) == 0xe0) {
+            read_track(disk, cycles);
         } else {
-            finish(disk, NOT_FOUND); /* raw track commands are not implemented */
+            write_track(disk, cycles);
         }
         break;
     case 1:
@@ -561,7 +769,15 @@ void coupe_fdc_write(int drive, int port, uint8_t value, uint32_t cycles)
         break;
     case 3:
         disk->data = value;
-        if (disk->op == WRITE_SECTOR && ready(disk, cycles)) {
+        if (disk->op == WRITE_TRACK && ready(disk, cycles)) {
+            disk->data_deadline = cycles + DATA_TIMEOUT;
+            if (disk->offset < TRACK_BUFFER) {
+                disk->raw[disk->offset++] = value;
+            }
+            if (disk->offset >= TRACK_BYTES) {
+                finish(disk, apply_track(disk));
+            }
+        } else if (disk->op == WRITE_SECTOR && ready(disk, cycles)) {
             disk->data_deadline = cycles + DATA_TIMEOUT;
             disk->buffer[disk->offset++ % CHUNK] = value;
             if (disk->offset == disk->size || disk->offset % CHUNK == 0) {

@@ -77,8 +77,10 @@ serial console. It uses the same Z80 core as
 - **Touchscreen setup** for Bluetooth pairing, Wi-Fi, sound and disks.
   Hold the top-right corner for two seconds to return to setup.
 - **Web interface** at `http://sam-coupe.local` when the board is on the
-  network. Upload, insert, eject and download floppy images and check
-  the emulator's status (each drive shows its image's kind).
+  network. Upload, insert, eject, create and download floppy images, and
+  see the machine's state: memory paging, the screen mode with its
+  resolution and colours, the palette as swatches, the SAA1099's channels
+  (each drive shows its image's kind).
 
 <p align="center">
   <img alt="SAM BASIC showing 13 after evaluating PRINT 6+7"
@@ -185,9 +187,10 @@ Set `COUPE_MEMORY=256` to boot the base machine. The host defaults to
 
 - Memory contention, interrupts and floppy timings are approximate.
   Video register changes are sampled once per scanline.
-- The floppy controller reads and writes sectors. Guest formatting (Write
-  Track), raw track reads and the SAD, SDF and TD0 containers still need
-  support; EDSK images keep their layout (a sector's size can't change).
+- The floppy controller reads and writes sectors and formats tracks (Write
+  Track) where the image's layout allows: SAMDOS and Pro-DOS format blank
+  800 KiB and 720 KiB images; EDSK tracks keep their number and sizes of
+  sectors. The SAD, SDF and TD0 containers still need support.
   [SAMdisk format reference](https://simonowen.com/samdisk/formats/)
 - Cassette, MIDI, mouse, external RAM and SAA1099 envelope generators are
   unimplemented. Game and demo compatibility, keyboard input and speaker

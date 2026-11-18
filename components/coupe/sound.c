@@ -49,6 +49,19 @@ void coupe_sound_reset(int16_t *samples)
     coupe_unlock(&guard);
 }
 
+void coupe_get_sound(coupe_sound_status_t *status)
+{
+    status->enabled = registers[28] & 1;
+    for (unsigned i = 0; i < 6; i++) {
+        unsigned octave = (registers[16 + i / 2] >> (4 * (i % 2))) & 7;
+        status->amplitude[i] = registers[i];
+        status->hz[i] = (15625u << octave) / (511 - registers[8 + i]);
+    }
+    status->tones = registers[20] & 63;
+    status->noises = registers[21] & 63;
+    status->beeper = beep;
+}
+
 void coupe_sound_beeper(bool level)
 {
     beep = level;

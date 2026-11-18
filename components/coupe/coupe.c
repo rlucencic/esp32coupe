@@ -26,6 +26,7 @@ enum {
 static coupe_config_t cfg;
 static uint8_t lmpr, hmpr, vmpr, border, irq_line, display_bus;
 static uint16_t colours[16], palette[128];
+static uint8_t clut[16];                /* (the web page's) */
 static const uint8_t open_bus[PAGE] = {[0 ... PAGE - 1] = 0xff};
 static _Atomic uint8_t keys[9];
 static _Atomic uint32_t frames, signature, cpu_status;
@@ -121,7 +122,10 @@ static uint8_t port_in(uint16_t port, int at)
 static void port_out(uint16_t port, uint8_t value, int at)
 {
     switch (port & 0xff) {
-    case CLUT: colours[(port >> 8) & 15] = palette[value & 127]; break;
+    case CLUT:
+        colours[(port >> 8) & 15] = palette[value & 127];
+        clut[(port >> 8) & 15] = value & 127;
+        break;
     case STATUS: irq_line = value; break;
     case LMPR: lmpr = value; map_memory(); break;
     case HMPR: hmpr = value; map_memory(); break;
@@ -310,7 +314,14 @@ uint32_t coupe_screen_signature(void)
 void coupe_get_status(coupe_status_t *status)
 {
     uint32_t state = atomic_load_explicit(&cpu_status, memory_order_relaxed);
-    *status = (coupe_status_t){atomic_load_explicit(&frames, memory_order_relaxed), state & 0xffff, state >> 16};
+    *status = (coupe_status_t){.frames = atomic_load_explicit(&frames, memory_order_relaxed),
+                               .pc = state & 0xffff, .mode = state >> 16};
+    status->lmpr = lmpr;
+    status->hmpr = hmpr;
+    status->vmpr = vmpr;
+    status->border = border;
+    status->line_irq = irq_line;
+    memcpy(status->clut, clut, sizeof(clut));
 }
 
 /* USB usage values indexed by the SAM's nine active-low keyboard rows. */

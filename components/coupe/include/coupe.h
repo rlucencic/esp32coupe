@@ -31,8 +31,22 @@ typedef struct {
 typedef struct {
     uint32_t frames;
     uint16_t pc;
-    uint8_t mode;
+    uint8_t mode;               /* VMPR bits 5-6: 0-3 for modes 1-4 */
+    uint8_t lmpr, hmpr, vmpr;   /* the paging and video registers (ports 250-252) */
+    uint8_t border;             /* port 254 as written */
+    uint8_t line_irq;           /* port 249: the line interrupt's line (>= 192: off) */
+    uint8_t clut[16];           /* the palette: each entry a colour 0-127 */
 } coupe_status_t;
+
+typedef struct {
+    bool enabled;               /* SAA1099 register 28 bit 0 */
+    uint8_t amplitude[6];       /* low nibble left, high nibble right */
+    uint16_t hz[6];             /* each channel's tone */
+    uint8_t tones, noises;      /* registers 20 and 21: channels with tone, noise */
+    bool beeper;
+} coupe_sound_status_t;
+
+void coupe_get_sound(coupe_sound_status_t *status);
 
 void coupe_init(const coupe_config_t *config);
 void coupe_reset(void);
