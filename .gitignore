@@ -1,0 +1,9 @@
+/build*/
+/managed_components/
+/sdkconfig*
+!/sdkconfig.defaults
+/dependencies.lock*
+/roms/*
+!/roms/README.md
+/components/coupe/host/build/
+*.ppm
