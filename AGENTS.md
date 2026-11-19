@@ -96,11 +96,12 @@ and its default branch is `main`.
   volume L/R; the beeper), Keyboard (the SAM keys' places), Disks; each
   drive's detail is its image's kind. The core reports them through
   `coupe_get_status()` and `coupe_get_sound()`.
-- The whole `/api/status` reply must fit esp32emu's 4 KiB (`STATUS_SIZE` in
-  `web.c`): rows are HTML inside JSON (quotes escaped), so keep markup short
-  (a swatch is `<b style="background:#rrggbb">&nbsp;&nbsp;&nbsp;</b>`); the
-  Coupé's reply is ~2.7 KiB. A palette row in a 640-byte buffer was cut
-  after four swatches.
+- The whole `/api/status` reply must fit esp32emu's `STATUS_SIZE` in `web.c`
+  (8 KiB since 2026-11-19, 4 KiB before): rows are HTML inside JSON (quotes
+  escaped), so keep markup short (a swatch is
+  `<b style="background:#rrggbb">&nbsp;&nbsp;&nbsp;</b>`); the Coupé's reply
+  is ~2.7 KiB. A palette row in a 640-byte buffer was cut after four
+  swatches.
 - Speed: core 1 is busy all the time on the Tab5; 94% speed at BASIC, 86%
   in Pro-DOS's mode 3 (2026-11-18). Open.
 
