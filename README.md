@@ -33,6 +33,8 @@ serial console. It uses the same Z80 core as
 [esp32cpc](https://github.com/rlucencic/esp32cpc) (Amstrad CPC) and
 [esp32msx](https://github.com/rlucencic/esp32msx) (MSX).
 
+[esp32oric](https://github.com/rlucencic/esp32oric) (Oric Atmos and Oric-1) uses the same board runtime.
+
 ## Features
 
 **The machine**
